@@ -63,7 +63,7 @@ def test(args, bags_list, milnet):
         feats_list = []
         pos_list = []
         classes_list = []
-        csv_file_path = glob.glob(os.path.join(bags_list[i], '*.jpg'))
+        csv_file_path = glob.glob(os.path.join(bags_list[i], '*.jpeg'))
         dataloader, bag_size = bag_dataset(args, csv_file_path)
         with torch.no_grad():
             for iteration, batch in enumerate(dataloader):

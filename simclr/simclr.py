@@ -6,6 +6,7 @@ from loss.nt_xent import NTXentLoss
 import os
 import shutil
 import sys
+from tqdm import tqdm
 
 apex_support = False
 try:
@@ -93,42 +94,43 @@ class SimCLR(object):
         best_valid_loss = np.inf
 
         for epoch_counter in range(self.config['epochs']):
-            for (xis, xjs) in train_loader:
-                optimizer.zero_grad()
+            with tqdm(train_loader, desc=f"Epoch {epoch_counter + 1}/{self.config['epochs']} Training") as t:
+                for (xis, xjs) in train_loader:
+                    optimizer.zero_grad()
 
-                xis = xis.to(self.device)
-                xjs = xjs.to(self.device)
+                    xis = xis.to(self.device)
+                    xjs = xjs.to(self.device)
 
-                loss = self._step(model, xis, xjs, n_iter)
+                    loss = self._step(model, xis, xjs, n_iter)
 
-                if n_iter % self.config['log_every_n_steps'] == 0:
-                    self.writer.add_scalar('train_loss', loss, global_step=n_iter)
+                    if n_iter % self.config['log_every_n_steps'] == 0:
+                        self.writer.add_scalar('train_loss', loss, global_step=n_iter)
+                        t.set_postfix({'train_loss':loss.item()})
+                    if apex_support and self.config['fp16_precision']:
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
 
-                if apex_support and self.config['fp16_precision']:
-                    with amp.scale_loss(loss, optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss.backward()
+                    optimizer.step()
+                    n_iter += 1
 
-                optimizer.step()
-                n_iter += 1
+                # validate the model if requested
+                if epoch_counter % self.config['eval_every_n_epochs'] == 0:
+                    valid_loss = self._validate(model, valid_loader)
+                    if valid_loss < best_valid_loss:
+                        # save the model weights    
+                        best_valid_loss = valid_loss
+                        torch.save(model.state_dict(), os.path.join(model_checkpoints_folder, 'model.pth'))
+                        print('saved')
 
-            # validate the model if requested
-            if epoch_counter % self.config['eval_every_n_epochs'] == 0:
-                valid_loss = self._validate(model, valid_loader)
-                if valid_loss < best_valid_loss:
-                    # save the model weights
-                    best_valid_loss = valid_loss
-                    torch.save(model.state_dict(), os.path.join(model_checkpoints_folder, 'model.pth'))
-                    print('saved')
-
-                self.writer.add_scalar('validation_loss', valid_loss, global_step=valid_n_iter)
-                valid_n_iter += 1
+                    self.writer.add_scalar('validation_loss', valid_loss, global_step=valid_n_iter)
+                    valid_n_iter += 1
 
             # warmup for the first 10 epochs
-            if epoch_counter >= 10:
-                scheduler.step()
-            self.writer.add_scalar('cosine_lr_decay', scheduler.get_lr()[0], global_step=n_iter)
+                if epoch_counter >= 10:
+                    scheduler.step()
+                self.writer.add_scalar('cosine_lr_decay', scheduler.get_lr()[0], global_step=n_iter)
 
     def _load_pre_trained_weights(self, model):
         try:
@@ -144,7 +146,7 @@ class SimCLR(object):
     def _validate(self, model, valid_loader):
 
         # validation steps
-        with torch.no_grad():
+        with torch.no_grad(), tqdm(valid_loader, desc="Validating") as t:
             model.eval()
 
             valid_loss = 0.0
@@ -155,6 +157,7 @@ class SimCLR(object):
 
                 loss = self._step(model, xis, xjs, counter)
                 valid_loss += loss.item()
+                t.set_postfix({'validation_loss':loss.item()})
                 counter += 1
             valid_loss /= counter
         model.train()

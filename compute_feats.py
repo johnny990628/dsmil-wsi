@@ -113,7 +113,7 @@ def compute_tree_feats(args, bags_list, embedder_low, embedder_high, save_path=N
                         elif args.tree_fusion == 'cat':
                             feats = np.concatenate((feats.cpu().numpy(), feats_list[idx][None, :]), axis=-1)
                         else:
-                            raise NotImplementedError(f"{args.tree_fusion} is not an excepted option for --tree_fusion. This argument accepts 2 options: 'fusion' and 'cat'.")
+                            raise NotImplementedError(f"{args.tree_fusion} is not an excepted option for --tree_fusion.")
                         
                         feats_tree_list.extend(feats)
                 sys.stdout.write('\r Computed: {}/{} -- {}/{}'.format(i+1, num_bags, idx+1, len(low_patches)))
