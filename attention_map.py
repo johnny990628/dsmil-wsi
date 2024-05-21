@@ -125,12 +125,12 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size of feeding patches')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--feats_size', type=int, default=512)
-    parser.add_argument('--thres', nargs='+', type=float, default=[0.7371, 0.2752])
+    parser.add_argument('--thres', nargs='+', type=float, default=[0.5])
     parser.add_argument('--class_name', nargs='+', type=str, default=None)
     parser.add_argument('--embedder_weights', type=str, default='test/weights/embedder.pth')
     parser.add_argument('--aggregator_weights', type=str, default='test/weights/aggregator.pth')
     parser.add_argument('--bag_path', type=str, default='test/patches')
-    parser.add_argument('--patch_ext', type=str, default='jpg')
+    parser.add_argument('--patch_ext', type=str, default='jpeg')
     parser.add_argument('--map_path', type=str, default='test/output')
     parser.add_argument('--export_scores', type=int, default=0)
     parser.add_argument('--score_path', type=str, default='test/score')
@@ -140,7 +140,7 @@ if __name__ == '__main__':
         print('Use ImageNet features')
         resnet = models.resnet18(pretrained=True, norm_layer=nn.BatchNorm2d)
     else:
-        resnet = models.resnet18(pretrained=False, norm_layer=nn.InstanceNorm2d)
+        resnet = models.resnet50(pretrained=False, norm_layer=nn.InstanceNorm2d)
     for param in resnet.parameters():
         param.requires_grad = False
     resnet.fc = nn.Identity()

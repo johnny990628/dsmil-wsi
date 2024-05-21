@@ -62,28 +62,22 @@ class SimCLR(object):
 
         train_loader, valid_loader = self.dataset.get_data_loaders()
 
-        model = ResNetSimCLR(**self.config["model"])# .to(self.device)
+        model = ResNetSimCLR(**self.config["model"])
+        model = model.to(self.device)  # 先将模型移到设备
+
+        optimizer = torch.optim.Adam(model.parameters(), 1e-5, weight_decay=eval(self.config['weight_decay']))
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config['epochs'], eta_min=0, last_epoch=-1)
+
+    # 在模型放入DataParallel前应用AMP
+        if apex_support and self.config['fp16_precision']:
+            model, optimizer = amp.initialize(model, optimizer, opt_level='O2', keep_batchnorm_fp32=True)
+
+    # 如果有多个GPU，则使用DataParallel
         if self.config['n_gpu'] > 1:
             device_n = len(eval(self.config['gpu_ids']))
             model = torch.nn.DataParallel(model, device_ids=range(device_n))
+
         model = self._load_pre_trained_weights(model)
-        model = model.to(self.device)
-            
-
-        optimizer = torch.optim.Adam(model.parameters(), 1e-5, weight_decay=eval(self.config['weight_decay']))
-
-#         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader), eta_min=0,
-#                                                                last_epoch=-1)
-        
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config['epochs'], eta_min=0,
-                                                               last_epoch=-1)
-        
-
-        if apex_support and self.config['fp16_precision']:
-            model, optimizer = amp.initialize(model, optimizer,
-                                              opt_level='O2',
-                                              keep_batchnorm_fp32=True)
-
         model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
 
         # save config file
