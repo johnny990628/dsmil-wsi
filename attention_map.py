@@ -86,24 +86,27 @@ def test(args, bags_list, milnet):
             bag_prediction = torch.sigmoid(bag_prediction).squeeze().cpu().numpy()
             if len(bag_prediction.shape)==0 or len(bag_prediction.shape)==1:
                 bag_prediction = np.atleast_1d(bag_prediction)
-            benign = True
-            num_pos_classes = 0
-            for c in range(args.num_classes):          
+            print(bag_prediction)
+
+            # 判断结果并处理输出
+            is_positive = False  # 标记是否检测到positive类
+            for c in range(args.num_classes):
                 if bag_prediction[c] >= args.thres[c]:
+                    is_positive = True
                     attentions = A[:, c].cpu().numpy()
-                    num_pos_classes += 1
-                    if benign: # first class detected
-                        print(bags_list[i] + ' is detected as: ' + args.class_name[c])
-                        colored_tiles = np.matmul(attentions[:, None], colors[c][None, :])
-                    else:
-                        print('and ' + args.class_name[c])          
-                        colored_tiles = colored_tiles + np.matmul(attentions[:, None], colors[c][None, :])
-                    benign = False # set flag
-            if benign:
-                print(bags_list[i] + ' is detected as: benign')
+                    print(f"{bags_list[i]} is detected as positive due to high {args.class_name[c]}")
+                    break  # 假设任何一个类超过阈值即为positive
+
+            if not is_positive:
+                print(f"{bags_list[i]} is detected as negative")
+
+            # 根据检测结果绘制色彩映射
+            if is_positive:
+                colored_tiles = np.matmul(attentions[:, None], colors[c][None, :])
+            else:
                 attentions = torch.sum(A, 1).cpu().numpy()
                 colored_tiles = np.matmul(attentions[:, None], colors[0][None, :]) * 0
-            colored_tiles = (colored_tiles / num_pos_classes)
+
             colored_tiles = exposure.rescale_intensity(colored_tiles, out_range=(0, 1))
             color_map = np.zeros((np.amax(pos_arr, 0)[0]+1, np.amax(pos_arr, 0)[1]+1, 3))
             for k, pos in enumerate(pos_arr):
@@ -111,6 +114,7 @@ def test(args, bags_list, milnet):
             slide_name = bags_list[i].split(os.sep)[-1]
             color_map = transform.resize(color_map, (color_map.shape[0]*32, color_map.shape[1]*32), order=0)
             io.imsave(os.path.join(args.map_path, slide_name+'.png'), img_as_ubyte(color_map))
+            
             if args.export_scores:
                 df_scores = pd.DataFrame(A.cpu().numpy())
                 pos_arr_str = [str(s) for s in pos_arr]
@@ -125,20 +129,20 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size of feeding patches')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--feats_size', type=int, default=512)
-    parser.add_argument('--thres', nargs='+', type=float, default=[0.5])
+    parser.add_argument('--thres', nargs='+', type=float, default=[0.33796])
     parser.add_argument('--class_name', nargs='+', type=str, default=None)
     parser.add_argument('--embedder_weights', type=str, default='test/weights/embedder.pth')
     parser.add_argument('--aggregator_weights', type=str, default='test/weights/aggregator.pth')
     parser.add_argument('--bag_path', type=str, default='test/patches')
     parser.add_argument('--patch_ext', type=str, default='jpeg')
     parser.add_argument('--map_path', type=str, default='test/output')
-    parser.add_argument('--export_scores', type=int, default=0)
+    parser.add_argument('--export_scores', type=int, default=1)
     parser.add_argument('--score_path', type=str, default='test/score')
     args = parser.parse_args()
     
     if args.embedder_weights == 'ImageNet':
         print('Use ImageNet features')
-        resnet = models.resnet18(pretrained=True, norm_layer=nn.BatchNorm2d)
+        resnet = models.resnet50(pretrained=True, norm_layer=nn.BatchNorm2d)
     else:
         resnet = models.resnet50(pretrained=False, norm_layer=nn.InstanceNorm2d)
     for param in resnet.parameters():
