@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 from tqdm import tqdm
+from norm.amp_norm import AmpNorm
 
 apex_support = False
 try:
@@ -14,6 +15,7 @@ try:
     from apex import amp
 
     apex_support = True
+    print("Enable the apex support")
 except:
     print("Please install apex for mixed precision training from: https://github.com/NVIDIA/apex")
     apex_support = False
@@ -37,6 +39,7 @@ class SimCLR(object):
         self.writer = SummaryWriter()
         self.dataset = dataset
         self.nt_xent_criterion = NTXentLoss(self.device, config['batch_size'], **config['loss'])
+        self.amp_norm = AmpNorm(input_shape=eval(config['dataset']['input_shape']))
 
     def _get_device(self):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -44,6 +47,12 @@ class SimCLR(object):
         return device
 
     def _step(self, model, xis, xjs, n_iter):
+
+        xis = xis.to(self.device)
+        xjs = xjs.to(self.device)
+
+        xis = self.amp_norm(xis)
+        xjs = self.amp_norm(xjs)
 
         # get the representations and the projections
         ris, zis = model(xis)  # [N,C]
@@ -62,25 +71,26 @@ class SimCLR(object):
 
         train_loader, valid_loader = self.dataset.get_data_loaders()
 
-        model = ResNetSimCLR(**self.config["model"])
+        model = ResNetSimCLR(self.config['fine_tune_from'], **self.config["model"])
         model = model.to(self.device)  # 先将模型移到设备
 
         optimizer = torch.optim.Adam(model.parameters(), 1e-5, weight_decay=eval(self.config['weight_decay']))
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config['epochs'], eta_min=0, last_epoch=-1)
 
+        model = self._load_pre_trained_weights(model)
+
     # 在模型放入DataParallel前应用AMP
         if apex_support and self.config['fp16_precision']:
             model, optimizer = amp.initialize(model, optimizer, opt_level='O2', keep_batchnorm_fp32=True)
 
+        # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.local_rank], output_device=self.local_rank, find_unused_parameters=True)
     # 如果有多个GPU，则使用DataParallel
         if self.config['n_gpu'] > 1:
-            device_n = len(eval(self.config['gpu_ids']))
-            model = torch.nn.DataParallel(model, device_ids=range(device_n))
+            device_ids = list(range(self.config['n_gpu']))
+            model = torch.nn.DataParallel(model, device_ids=device_ids)
 
-        model = self._load_pre_trained_weights(model)
+        
         model_checkpoints_folder = os.path.join(self.writer.log_dir, 'checkpoints')
-
-        # save config file
         _save_config_file(model_checkpoints_folder)
 
         n_iter = 0
@@ -124,16 +134,21 @@ class SimCLR(object):
             # warmup for the first 10 epochs
                 if epoch_counter >= 10:
                     scheduler.step()
-                self.writer.add_scalar('cosine_lr_decay', scheduler.get_lr()[0], global_step=n_iter)
+                    
+                    self.writer.add_scalar('cosine_lr_decay', scheduler.get_lr()[0], global_step=n_iter)
+
 
     def _load_pre_trained_weights(self, model):
-        try:
-            checkpoints_folder = os.path.join('./runs', self.config['fine_tune_from'], 'checkpoints')
-            state_dict = torch.load(os.path.join(checkpoints_folder, 'model.pth'))
-            model.load_state_dict(state_dict)
-            print("Loaded pre-trained model with success.")
-        except FileNotFoundError:
-            print("Pre-trained weights not found. Training from scratch.")
+        if self.config['fine_tune_from'] == 'imagenet':
+            print("Using ImageNet pretrained weights.")
+        else:
+            try:
+                checkpoints_folder = os.path.join('./runs', self.config['fine_tune_from'], 'checkpoints')
+                state_dict = torch.load(os.path.join(checkpoints_folder, 'model.pth'))
+                model.load_state_dict(state_dict)
+                print("Loaded pre-trained model with success.")
+            except FileNotFoundError:
+                print("Pre-trained weights not found. Training from scratch.")
 
         return model
 

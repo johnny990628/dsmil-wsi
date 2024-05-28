@@ -17,6 +17,8 @@ import warnings
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.metrics import recall_score, f1_score, roc_auc_score, confusion_matrix
+import json
 
 class BagLabels():
     def __init__(self,file_path):
@@ -25,12 +27,11 @@ class BagLabels():
 
     def _fetch_labels(self):
         data = pd.read_csv(self.file_path, header=0, names=['file_path', 'label'])
-        return {row['file_path'].split('/')[-1].replace('.csv', ''): int(row['label']) for index, row in data.iterrows()}
+        return {row['file_path']: row['label'] for index, row in data.iterrows()}
 
     def get_label(self, id):
         filename = id.split('/')[-1]
-        print(filename)
-        return self.labels_dict.get(filename)
+        return self.labels_dict[filename]
 
 
 class BagDataset():
@@ -74,14 +75,41 @@ def bag_dataset(args, csv_file_path):
     dataloader = DataLoader(transformed_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=False)
     return dataloader, len(transformed_dataset)
 
-def plt_confusion_matrix(args, predictions, ground_truth):
+def save_metrics(args, pred_scores, predictions, ground_truth):
+    recall = recall_score(ground_truth, predictions)
+    f1 = f1_score(ground_truth, predictions)
+    auroc = roc_auc_score(ground_truth, pred_scores)
     cm = confusion_matrix(ground_truth, predictions)
+    TN, FP, FN, TP = cm.ravel()
+    sensitivity = TP / (TP + FN)
+    specificity = TN / (TN + FP)
+    results = {
+    'Recall': recall,
+    'F1 Score': f1,
+    'AUROC': auroc,
+    'Sensitivity':sensitivity,
+    'Specificity':specificity
+    }
+    filepath = os.path.join(args.score_path,'metrics.json')
+    with open(filepath, 'w') as f:
+        json.dump(results, f, indent=4)
+    
     sns.heatmap(cm, annot=True, fmt="d", cmap='Blues')
     plt.xlabel('Prediction')
     plt.ylabel('Ground Truth')
     plt.title('Confusion Matrix')
     plt.savefig(f'{args.plt_path}/confusion_matrix.png')
     plt.close()
+
+def save_prediction(args, pred_scores, predictions, ground_truth):
+    df = pd.DataFrame({
+    'Prediction Score':pred_scores,
+    'Prediction': predictions,
+    'Ground Truth': ground_truth
+    })
+    filepath = os.path.join(args.score_path,'predictions.json')
+    df.to_csv(filepath,index=False)
+
 
 def test(args, bags_list, bag_labels, milnet):
     milnet.eval()
@@ -90,6 +118,7 @@ def test(args, bags_list, bag_labels, milnet):
     predictions = []
     ground_truth = []
     for i in range(0, num_bags):
+        print(f'Bag{i}')
         feats_list = []
         pos_list = []
         classes_list = []
@@ -116,7 +145,10 @@ def test(args, bags_list, bag_labels, milnet):
             if args.average:
                 max_prediction, _ = torch.max(ins_classes, 0) 
                 bag_prediction = (bag_prediction+torch.sigmoid(max_prediction).cpu().numpy())/2
-            print(bag_prediction)
+            bag_prediction = bag_prediction[0]
+            print(f'Bag prediction score:{bag_prediction}')
+            print(f'Bag prediction:{1 if bag_prediction>=args.threshold else 0}')
+            print(f'Ground Truth:{label}')
             predictions.append(bag_prediction)
             ground_truth.append(label)
 
@@ -145,7 +177,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size of feeding patches')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--feats_size', type=int, default=512)
-    parser.add_argument('--threshold', type=float, default=0.33796)
+    parser.add_argument('--threshold', type=float, default=0.07824137)
     parser.add_argument('--average', type=bool, default=True, help='Average the score of max-pooling and bag aggregating')
     parser.add_argument('--embedder_weights',type=str,default='test/weights/embedder.pth')
     parser.add_argument('--aggregator_weights', type=str, default='test/weights/aggregator.pth')
@@ -154,7 +186,7 @@ if __name__ == '__main__':
     parser.add_argument('--map_path', type=str, default='test/output')
     parser.add_argument('--export_scores', type=int, default=1)
     parser.add_argument('--score_path', type=str, default='test/score')
-    parser.add_argument('--gt_path', type=str, default='datasets/TCGA-lung/TCGA-lung.csv')
+    parser.add_argument('--gt_path', type=str, default='test/label.csv')
     parser.add_argument('--plt_path', type=str, default='test/plts')
     args = parser.parse_args()
     
@@ -192,9 +224,10 @@ if __name__ == '__main__':
         os.makedirs(args.score_path, exist_ok=True)
 
     bag_labels = BagLabels(args.gt_path)
-    predictions, ground_truth = test(args, bags_list, bag_labels, milnet)
-    predictions = [1 if p>=args.threshold else 0 for p in predictions]
+    pred_scores, ground_truth = test(args, bags_list, bag_labels, milnet)
+    predictions = [1 if p>=args.threshold else 0 for p in pred_scores]
 
     os.makedirs(args.plt_path, exist_ok=True)
-    plt_confusion_matrix(args,predictions, ground_truth)
+    save_prediction(args, pred_scores, predictions, ground_truth)
+    save_metrics(args, pred_scores, predictions, ground_truth)
 

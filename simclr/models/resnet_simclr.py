@@ -5,17 +5,22 @@ import torchvision.models as models
 
 class ResNetSimCLR(nn.Module):
 
-    def __init__(self, base_model, out_dim):
+    def __init__(self, fine_tune_from, base_model, out_dim):
         super(ResNetSimCLR, self).__init__()
-        self.resnet_dict = {"resnet18": models.resnet18(pretrained=False, norm_layer=nn.InstanceNorm2d),
-                            "resnet50": models.resnet50(pretrained=False, norm_layer=nn.InstanceNorm2d)}
+        pretrained = fine_tune_from=='imagenet'
+        self.resnet_dict = {"resnet18": models.resnet18(pretrained=pretrained),
+                            "resnet50": models.resnet50(pretrained=pretrained)} 
+        if not pretrained:
+            self.resnet_dict = {"resnet18": models.resnet18(pretrained=pretrained,norm_layer=nn.InstanceNorm2d),
+                            "resnet50": models.resnet50(pretrained=pretrained,norm_layer=nn.InstanceNorm2d)} 
 
         resnet = self._get_basemodel(base_model)
-        num_ftrs = resnet.fc.in_features
+        if pretrained:
+            resnet = self._replace_norm_layer(resnet, nn.InstanceNorm2d)
 
+        num_ftrs = resnet.fc.in_features
         self.features = nn.Sequential(*list(resnet.children())[:-1])
 
-        # projection MLP
         self.l1 = nn.Linear(num_ftrs, num_ftrs)
         self.l2 = nn.Linear(num_ftrs, out_dim)
 
@@ -26,6 +31,15 @@ class ResNetSimCLR(nn.Module):
             return model
         except:
             raise ("Invalid model name. Check the config file and pass one of: resnet18 or resnet50")
+
+    def _replace_norm_layer(self, model, norm_layer):
+        for name, module in model.named_children():
+            if isinstance(module, nn.BatchNorm2d):
+                setattr(model, name, norm_layer(module.num_features, affine=True))
+            elif len(list(module.children())) > 0:
+                self._replace_norm_layer(module, norm_layer)
+        return model
+
 
     def forward(self, x):
         h = self.features(x)

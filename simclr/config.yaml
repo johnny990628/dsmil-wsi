@@ -1,7 +1,7 @@
 batch_size: 512
 epochs: 100
 eval_every_n_epochs: 1
-fine_tune_from: ''
+fine_tune_from: 'imagenet'
 log_every_n_steps: 5
 weight_decay: 10e-6
 fp16_precision: False
