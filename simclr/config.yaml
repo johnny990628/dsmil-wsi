@@ -1,7 +1,7 @@
 batch_size: 512
 epochs: 100
 eval_every_n_epochs: 1
-fine_tune_from: 'imagenet'
+fine_tune_from: 'tcga_pretrained'
 log_every_n_steps: 5
 weight_decay: 10e-6
 fp16_precision: False
@@ -10,7 +10,7 @@ gpu_ids: (0,1,2,3)
 
 model:
   out_dim: 256
-  base_model: "resnet50"
+  base_model: "resnet18"
 
 dataset:
   s: 1

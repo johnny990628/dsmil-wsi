@@ -1,7 +1,9 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
-
+import os
+from collections import OrderedDict
 
 class ResNetSimCLR(nn.Module):
 
@@ -23,6 +25,7 @@ class ResNetSimCLR(nn.Module):
 
         self.l1 = nn.Linear(num_ftrs, num_ftrs)
         self.l2 = nn.Linear(num_ftrs, out_dim)
+
 
     def _get_basemodel(self, model_name):
         try:

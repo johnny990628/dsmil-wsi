@@ -51,8 +51,8 @@ class SimCLR(object):
         xis = xis.to(self.device)
         xjs = xjs.to(self.device)
 
-        xis = self.amp_norm(xis)
-        xjs = self.amp_norm(xjs)
+        # xis = self.amp_norm(xis)
+        # xjs = self.amp_norm(xjs)
 
         # get the representations and the projections
         ris, zis = model(xis)  # [N,C]
@@ -77,7 +77,7 @@ class SimCLR(object):
         optimizer = torch.optim.Adam(model.parameters(), 1e-5, weight_decay=eval(self.config['weight_decay']))
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.config['epochs'], eta_min=0, last_epoch=-1)
 
-        model = self._load_pre_trained_weights(model)
+        # model = self._load_pre_trained_weights(model)
 
     # 在模型放入DataParallel前应用AMP
         if apex_support and self.config['fp16_precision']:
@@ -145,7 +145,11 @@ class SimCLR(object):
             try:
                 checkpoints_folder = os.path.join('./runs', self.config['fine_tune_from'], 'checkpoints')
                 state_dict = torch.load(os.path.join(checkpoints_folder, 'model.pth'))
-                model.load_state_dict(state_dict)
+    
+                model_state_dict = {k.replace("module.", "").replace("features.", "layer"): v for k, v in
+                                    state_dict.items()}
+
+                model.load_state_dict(state_dict,strict=False)
                 print("Loaded pre-trained model with success.")
             except FileNotFoundError:
                 print("Pre-trained weights not found. Training from scratch.")

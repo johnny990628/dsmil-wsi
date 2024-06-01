@@ -16,3 +16,5 @@ test-c16/
 __pycache__
 *.ipynb
 abmil.py
+*.out
+*.zip

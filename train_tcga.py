@@ -15,7 +15,6 @@ from sklearn.model_selection import KFold
 from collections import OrderedDict
 import json
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
 def get_bag_feats(csv_file_df, args):
     if args.dataset == 'TCGA-lung-default':
@@ -170,8 +169,12 @@ def optimal_thresh(fpr, tpr, thresholds, p=0):
 
 
 def print_epoch_info(epoch, args, train_loss_bag, test_loss_bag, avg_score, aucs):
-    print('\r Epoch [%d/%d] train loss: %.4f test loss: %.4f, average score: %.4f, AUC: ' % 
-    (epoch, args.num_epochs, train_loss_bag, test_loss_bag, avg_score) + '|'.join('class-{}>>{}'.format(*k) for k in enumerate(aucs))) 
+    if args.dataset == 'TCGA-lung':
+        print('\r Epoch [%d/%d] train loss: %.4f test loss: %.4f, average score: %.4f, auc_LUAD: %.4f, auc_LUSC: %.4f' % 
+                (epoch, args.num_epochs, train_loss_bag, test_loss_bag, avg_score, aucs[0], aucs[1]))
+    else:
+        print('\r Epoch [%d/%d] train loss: %.4f test loss: %.4f, average score: %.4f, AUC: ' % 
+                (epoch, args.num_epochs, train_loss_bag, test_loss_bag, avg_score) + '|'.join('class-{}>>{}'.format(*k) for k in enumerate(aucs))) 
 
 def get_current_score(avg_score, aucs):
     current_score = (sum(aucs) + avg_score)/2
@@ -187,33 +190,19 @@ def save_model(args, fold, run, save_path, model, thresholds_optimal):
         json.dump([float(x) for x in thresholds_optimal], f)
 
 def print_save_message(args, save_name, thresholds_optimal):
-    print('Best model saved at: ' + save_name)
-    print('Best thresholds ===>>> '+ '|'.join('class-{}>>{}'.format(*k) for k in enumerate(thresholds_optimal)))
-
-def plot_loss_curves(train_losses, val_losses, save_path, title):
-    epochs = range(1, len(train_losses) + 1)
-    
-    plt.figure(figsize=(10, 5))
-    plt.plot(epochs, train_losses, label='Training Loss')
-    plt.plot(epochs, val_losses, label='Validation Loss')
-    
-    plt.title(title)
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.ylim([0, 1])
-    plt.legend()
-    
-    plt.savefig(save_path+'/'+title+'.png')
-    plt.close()
-
+    if args.dataset == 'TCGA-lung':
+        print('Best model saved at: ' + save_name + ' Best thresholds: LUAD %.4f, LUSC %.4f' % (thresholds_optimal[0], thresholds_optimal[1]))
+    else:
+        print('Best model saved at: ' + save_name)
+        print('Best thresholds ===>>> '+ '|'.join('class-{}>>{}'.format(*k) for k in enumerate(thresholds_optimal)))
 
 def main():
     parser = argparse.ArgumentParser(description='Train DSMIL on 20x patch features learned by SimCLR')
-    parser.add_argument('--num_classes', default=1, type=int, help='Number of output classes [2]')
+    parser.add_argument('--num_classes', default=2, type=int, help='Number of output classes [2]')
     parser.add_argument('--feats_size', default=512, type=int, help='Dimension of the feature size [512]')
     parser.add_argument('--lr', default=0.0001, type=float, help='Initial learning rate [0.0001]')
-    parser.add_argument('--num_epochs', default=100, type=int, help='Number of total training epochs [100]')
-    parser.add_argument('--stop_epochs', default=30, type=int, help='Skip remaining epochs if training has not improved after N epochs [10]')
+    parser.add_argument('--num_epochs', default=50, type=int, help='Number of total training epochs [100]')
+    parser.add_argument('--stop_epochs', default=10, type=int, help='Skip remaining epochs if training has not improved after N epochs [10]')
     parser.add_argument('--gpu_index', type=int, nargs='+', default=(0,), help='GPU ID(s) [0]')
     parser.add_argument('--weight_decay', default=1e-3, type=float, help='Weight decay [1e-3]')
     parser.add_argument('--dataset', default='TCGA-lung-default', type=str, help='Dataset folder name')
@@ -224,6 +213,7 @@ def main():
     parser.add_argument('--non_linearity', default=1, type=float, help='Additional nonlinear operation [0]')
     parser.add_argument('--average', type=bool, default=False, help='Average the score of max-pooling and bag aggregating')
     parser.add_argument('--eval_scheme', default='5-fold-cv', type=str, help='Evaluation scheme [5-fold-cv | 5-fold-cv-standalone-test | 5-time-train+valid+test ]')
+
     
     args = parser.parse_args()
     print(args.eval_scheme)
@@ -267,8 +257,6 @@ def main():
 
         save_path = os.path.join('weights', datetime.date.today().strftime("%Y%m%d"))
         os.makedirs(save_path, exist_ok=True)
-        plt_save_path = os.path.join(save_path,'plts')
-        os.makedirs(plt_save_path, exist_ok=True)
         run = len(glob.glob(os.path.join(save_path, '*.pth')))
 
         for fold, (train_index, test_index) in enumerate(kf.split(bags_path)):
@@ -280,14 +268,12 @@ def main():
             best_ac = 0
             best_auc = 0
             counter = 0
-            train_losses = []
-            test_losses = []
+
             for epoch in range(1, args.num_epochs+1):
                 counter += 1
                 train_loss_bag = train(args, train_path, milnet, criterion, optimizer) # iterate all bags
                 test_loss_bag, avg_score, aucs, thresholds_optimal = test(args, test_path, milnet, criterion)
-                train_losses.append(train_loss_bag)
-                test_losses.append(test_loss_bag)
+                
                 print_epoch_info(epoch, args, train_loss_bag, test_loss_bag, avg_score, aucs)
                 scheduler.step()
 
@@ -300,7 +286,6 @@ def main():
                     save_model(args, fold, run, save_path, milnet, thresholds_optimal)
                 if counter > args.stop_epochs: break
             fold_results.append((best_ac, best_auc))
-            plot_loss_curves(train_losses, test_losses, plt_save_path, f"Fold{fold+1}")
         mean_ac = np.mean(np.array([i[0] for i in fold_results]))
         mean_auc = np.mean(np.array([i[1] for i in fold_results]), axis=0)
         # Print mean and std deviation for each class
