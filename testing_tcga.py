@@ -86,6 +86,7 @@ def test(args, bags_list, milnet):
                 max_prediction, _ = torch.max(ins_classes, 0) 
                 bag_prediction = (bag_prediction+torch.sigmoid(max_prediction).cpu().numpy())/2
             color = [0, 0, 0]
+            
             if bag_prediction[0] >= args.thres_luad and bag_prediction[1] < args.thres_lusc:
                 print(bags_list[i] + ' is detected as: LUAD')
                 color = [0, 1, 0]

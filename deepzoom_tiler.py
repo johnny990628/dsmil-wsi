@@ -253,14 +253,14 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--magnifications', type=int, nargs='+', default=(0,), help='Levels for patch extraction [0]')
     parser.add_argument('-o', '--objective', type=float, default=20, help='The default objective power if metadata does not present [20]')
     parser.add_argument('-t', '--background_t', type=int, default=15, help='Threshold for filtering background [15]')  
-    args = parser.parse_args()
+    args = parser.parse_args() 
     levels = tuple(sorted(args.magnifications))
     assert len(levels)<=2, 'Only 1 or 2 magnifications are supported!'
     path_base = os.path.join('WSI', args.dataset)
     if len(levels) == 2:
-        out_base = os.path.join('WSI', args.dataset, 'pyramid')
+        out_base = os.path.join(path_base, 'pyramid')
     else:
-        out_base = os.path.join('WSI', args.dataset, 'single')
+        out_base = os.path.join(path_base, 'single')
     all_slides = glob.glob(os.path.join(path_base, '*/*.'+args.slide_format)) +  glob.glob(os.path.join(path_base, '*/*/*.'+args.slide_format))
     
     # pos-i_pos-j -> x, y

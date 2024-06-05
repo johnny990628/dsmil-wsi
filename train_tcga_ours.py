@@ -52,7 +52,6 @@ def generate_pt_files(args, df):
         torch.save(stacked_data, pt_file_path)
 
 
-
 def train(args, train_df, milnet, criterion, optimizer):
     milnet.train()
     dirs = shuffle(train_df)
@@ -209,9 +208,9 @@ def plot_loss_curves(train_losses, val_losses, save_path, title):
 
 def main():
     parser = argparse.ArgumentParser(description='Train DSMIL on 20x patch features learned by SimCLR')
-    parser.add_argument('--num_classes', default=1, type=int, help='Number of output classes [2]')
+    parser.add_argument('--num_classes', default=2, type=int, help='Number of output classes [2]')
     parser.add_argument('--feats_size', default=512, type=int, help='Dimension of the feature size [512]')
-    parser.add_argument('--lr', default=0.0001, type=float, help='Initial learning rate [0.0001]')
+    parser.add_argument('--lr', default=1e-4, type=float, help='Initial learning rate [0.0001]')
     parser.add_argument('--num_epochs', default=100, type=int, help='Number of total training epochs [100]')
     parser.add_argument('--stop_epochs', default=30, type=int, help='Skip remaining epochs if training has not improved after N epochs [10]')
     parser.add_argument('--gpu_index', type=int, nargs='+', default=(0,), help='GPU ID(s) [0]')

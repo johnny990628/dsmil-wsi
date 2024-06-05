@@ -15,6 +15,24 @@ from collections import OrderedDict
 from skimage import exposure, io, img_as_ubyte, transform
 import warnings
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, recall_score, f1_score, roc_auc_score, roc_curve, auc, precision_score
+import json
+
+class BagLabels():
+    def __init__(self,file_path):
+        self.file_path = file_path
+        self.labels_dict = self._fetch_labels()
+
+    def _fetch_labels(self):
+        data = pd.read_csv(self.file_path, header=0, names=['file_path', 'label'])
+        return {row['file_path']: row['label'] for index, row in data.iterrows()}
+
+    def get_label(self, id):
+        filename = id.split('/')[-1]
+        return self.labels_dict[filename]
+
 class BagDataset():
     def __init__(self, csv_file, transform=None):
         self.files_list = csv_file
@@ -56,16 +74,87 @@ def bag_dataset(args, csv_file_path):
     dataloader = DataLoader(transformed_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, drop_last=False)
     return dataloader, len(transformed_dataset)
 
-def test(args, bags_list, milnet):
+
+def compute_metrics(true_labels, pred_labels, scores, output_path):
+    true_labels = np.array(true_labels)
+    pred_labels = np.array(pred_labels)
+    scores = np.array(scores)
+    # Confusion matrix
+    cm = confusion_matrix(true_labels, pred_labels, labels=[0, 1])
+    sensitivity = recall_score(true_labels, pred_labels, pos_label=1)
+    specificity = recall_score(true_labels, pred_labels, pos_label=0)
+    f1 = f1_score(true_labels, pred_labels, average='weighted')
+    auroc = roc_auc_score(true_labels, scores)  # Assuming scores are the scores for the positive class
+    precision = precision_score(true_labels, pred_labels)
+
+    # Print metrics
+    print(f'F1 Score: {f1}')
+    print(f'AUC: {auroc}')
+    print(f'Sensitivity: {sensitivity}')
+    print(f'Specificity: {specificity}')
+    print(f'Precision: {precision}')
+
+    # Save metrics to JSON
+    results = {
+        'F1 Score': f1,
+        'AUC': auroc,
+        'Sensitivity': sensitivity,
+        'Specificity': specificity,
+        'Precision': precision
+    }
+    with open(output_path, 'w') as f:
+        json.dump(results, f, indent=4)
+
+    return cm, f1, auroc, sensitivity, specificity, precision
+
+def plot_cm(cm, output_path):
+    sns.heatmap(cm, annot=True, fmt="d", cmap='Blues')
+    plt.xlabel('Prediction')
+    plt.ylabel('Ground Truth')
+    plt.title('Confusion Matrix')
+    plt.savefig(output_path)
+    plt.close()
+
+def plot_roc(true_labels, scores, output_path):
+    fpr, tpr, _ = roc_curve(true_labels, scores)
+    roc_auc = auc(fpr, tpr)
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = {0:0.2f})'.format(roc_auc))
+    plt.plot([0, 1], [0, 1], 'k--', lw=2)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc="lower right")
+    plt.savefig(output_path)
+    plt.close()
+
+def save_prediction(args, predictions, ground_truth, scores):
+    df = pd.DataFrame({
+        'Prediction': predictions,
+        'Ground Truth': ground_truth,
+        'Score': scores,
+    })
+    filepath = os.path.join(args.score_path,'predictions.json')
+    df.to_csv(filepath,index=False)
+
+
+def test(args, bags_list, bag_labels, milnet):
     milnet.eval()
     num_bags = len(bags_list)
     Tensor = torch.FloatTensor
-    colors = [np.random.choice(range(256), size=3) for i in range(args.num_classes)]
+    # colors = [np.random.choice(range(256), size=3) for i in range(args.num_classes)]
+    colors = [np.array([0,1,0])]
+    predictions = []
+    scores = []
+    labels = []
     for i in range(0, num_bags):
         feats_list = []
         pos_list = []
         classes_list = []
         csv_file_path = glob.glob(os.path.join(bags_list[i], '*.'+args.patch_ext))
+        label = bag_labels.get_label(bags_list[i])
         dataloader, bag_size = bag_dataset(args, csv_file_path)
         with torch.no_grad():
             for iteration, batch in enumerate(dataloader):
@@ -86,21 +175,27 @@ def test(args, bags_list, milnet):
             bag_prediction = torch.sigmoid(bag_prediction).squeeze().cpu().numpy()
             if len(bag_prediction.shape)==0 or len(bag_prediction.shape)==1:
                 bag_prediction = np.atleast_1d(bag_prediction)
-            print(bag_prediction)
-
+            scores.append(bag_prediction[0])
+            labels.append(label)
+            print('---------------------------------------------')
+            print(f'Bag{i+1}')
+            print(f'Predict Score:{bag_prediction[0]}')
+            print(f'Label:{label}')
             # 判断结果并处理输出
             is_positive = False  # 标记是否检测到positive类
             for c in range(args.num_classes):
                 if bag_prediction[c] >= args.thres[c]:
                     is_positive = True
                     attentions = A[:, c].cpu().numpy()
-                    print(f"{bags_list[i]} is detected as positive due to high {args.class_name[c]}")
+                    print(f"{bags_list[i]} is detected as positive")
+                    predictions.append(1)
                     break  # 假设任何一个类超过阈值即为positive
 
             if not is_positive:
                 print(f"{bags_list[i]} is detected as negative")
+                predictions.append(0)
 
-            # 根据检测结果绘制色彩映射
+            
             if is_positive:
                 colored_tiles = np.matmul(attentions[:, None], colors[c][None, :])
             else:
@@ -120,24 +215,28 @@ def test(args, bags_list, milnet):
                 pos_arr_str = [str(s) for s in pos_arr]
                 df_scores['pos'] = pos_arr_str
                 df_scores.to_csv(os.path.join(args.score_path, slide_name+'.csv'), index=False)
-                
+    return labels, predictions, scores
+            
+
                 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
     parser = argparse.ArgumentParser(description='Testing workflow includes attention computing and color map production')
-    parser.add_argument('--num_classes', type=int, default=2, help='Number of output classes')
+    parser.add_argument('--num_classes', type=int, default=1, help='Number of output classes')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size of feeding patches')
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--feats_size', type=int, default=512)
-    parser.add_argument('--thres', nargs='+', type=float, default=[0.33796])
-    parser.add_argument('--class_name', nargs='+', type=str, default=None)
-    parser.add_argument('--embedder_weights', type=str, default='test/weights/embedder.pth')
-    parser.add_argument('--aggregator_weights', type=str, default='test/weights/aggregator.pth')
-    parser.add_argument('--bag_path', type=str, default='test/patches')
-    parser.add_argument('--patch_ext', type=str, default='jpeg')
-    parser.add_argument('--map_path', type=str, default='test/output')
-    parser.add_argument('--export_scores', type=int, default=1)
-    parser.add_argument('--score_path', type=str, default='test/score')
+    parser.add_argument('--thres', nargs='+', type=float, default=[0.5244130492210388])
+    parser.add_argument('--class_name', nargs='+', type=str, default=['low','high'])
+    parser.add_argument('--embedder_weights', type=str, default='tmb_test/weights/embedder.pth')
+    parser.add_argument('--aggregator_weights', type=str, default='tmb_test/weights/aggregator.pth')
+    parser.add_argument('--bag_path', type=str, default='tmb_test/patches')
+    parser.add_argument('--patch_ext', type=str, default='jpg')
+    parser.add_argument('--map_path', type=str, default='tmb_test/output')
+    parser.add_argument('--export_scores', type=int, default=0)
+    parser.add_argument('--score_path', type=str, default='tmb_test/score')
+    parser.add_argument('--gt_path', type=str, default='tmb_test/label.csv')
+    parser.add_argument('--plt_path', type=str, default='tmb_test/plts')
     args = parser.parse_args()
     
     if args.embedder_weights == 'ImageNet':
@@ -176,4 +275,8 @@ if __name__ == '__main__':
         args.class_name = ['class {}'.format(c) for c in range(args.num_classes)]
     if len(args.thres) != args.num_classes:
         raise ValueError('Number of thresholds does not match classes.')
-    test(args, bags_list, milnet)
+    bag_labels = BagLabels(args.gt_path)
+    labels, predictions, scores = test(args, bags_list, bag_labels, milnet)
+    cm, f1, auroc, sensitivity, specificity, precision = compute_metrics(labels, predictions, scores, os.path.join(args.score_path,'metrics.json'))
+    plot_cm(cm, os.path.join(args.plt_path,'confusion_matrix.png'))
+    plot_roc(labels, scores, os.path.join(args.plt_path,'roc_curve.png'))

@@ -6,6 +6,7 @@ temp_train/
 simclr/runs
 simclr/all_patches.csv
 test/
+tmb_test/
 weights/
 embedder/
 test-c16/
