@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def extract_amp(img_np):
     fft = np.fft.fft2(img_np, axes=(-2, -1))
     amp_np = np.abs(fft)

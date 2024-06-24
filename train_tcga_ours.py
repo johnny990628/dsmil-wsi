@@ -16,12 +16,10 @@ from collections import OrderedDict
 import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from attention_map import compute_metrics, plot_cm, plot_roc
 
 def get_bag_feats(csv_file_df, args):
-    if args.dataset == 'TCGA-lung-default':
-        feats_csv_path = 'datasets/tcga-dataset/tcga_lung_data_feats/' + csv_file_df.iloc[0].split('/')[1] + '.csv'
-    else:
-        feats_csv_path = csv_file_df.iloc[0]
+    feats_csv_path = csv_file_df.iloc[0]
     df = pd.read_csv(feats_csv_path)
     feats = shuffle(df).reset_index(drop=True)
     feats = feats.to_numpy()
@@ -33,6 +31,23 @@ def get_bag_feats(csv_file_df, args):
             label[int(csv_file_df.iloc[1])] = 1
         
     return label, feats, feats_csv_path
+
+def generate_test_pt_files(args, df):
+    temp_train_dir = os.path.join("temp_test")
+    if os.path.exists(temp_train_dir):
+        import shutil
+        shutil.rmtree(temp_train_dir, ignore_errors=True)
+    os.makedirs(temp_train_dir, exist_ok=True)
+    print('Creating intermediate testing files.')
+    for i in tqdm(range(len(df))):
+        label, feats, feats_csv_path = get_bag_feats(df.iloc[i], args)
+        bag_label = torch.tensor(np.array([label]), dtype=torch.float32)
+        bag_feats = torch.tensor(np.array(feats), dtype=torch.float32)
+        repeated_label = bag_label.repeat(bag_feats.size(0), 1)
+        stacked_data = torch.cat((bag_feats, repeated_label), dim=1)
+        # Save the stacked data into a .pt file
+        pt_file_path = os.path.join(temp_train_dir, os.path.splitext(feats_csv_path)[0].split(os.sep)[-1] + ".pt")
+        torch.save(stacked_data, pt_file_path)
 
 def generate_pt_files(args, df):
     temp_train_dir = "temp_train"
@@ -86,7 +101,7 @@ def test(args, test_df, milnet, criterion, thresholds=None, return_predictions=F
     milnet.eval()
     total_loss = 0
     test_labels = []
-    test_predictions = []
+    test_scores = []
     Tensor = torch.cuda.FloatTensor
     with torch.no_grad():
         for i, item in enumerate(test_df):
@@ -104,23 +119,24 @@ def test(args, test_df, milnet, criterion, thresholds=None, return_predictions=F
             sys.stdout.write('\r Testing bag [%d/%d] bag loss: %.4f' % (i, len(test_df), loss.item()))
             test_labels.extend([bag_label.squeeze().cpu().numpy().astype(int)])
             if args.average:
-                test_predictions.extend([(torch.sigmoid(max_prediction)+torch.sigmoid(bag_prediction)).squeeze().cpu().numpy()])
-            else: test_predictions.extend([torch.sigmoid(bag_prediction).squeeze().cpu().numpy()])
+                test_scores.extend([(torch.sigmoid(max_prediction)+torch.sigmoid(bag_prediction)).squeeze().cpu().numpy()])
+            else: test_scores.extend([torch.sigmoid(bag_prediction).squeeze().cpu().numpy()])
     test_labels = np.array(test_labels)
-    test_predictions = np.array(test_predictions)
-    auc_value, _, thresholds_optimal = multi_label_roc(test_labels, test_predictions, args.num_classes, pos_label=1)
+    test_scores = np.array(test_scores)
+    test_predictions = []
+    auc_value, _, thresholds_optimal = multi_label_roc(test_labels, test_scores, args.num_classes, pos_label=1)
     if thresholds: thresholds_optimal = thresholds
     if args.num_classes==1:
-        class_prediction_bag = copy.deepcopy(test_predictions)
-        class_prediction_bag[test_predictions>=thresholds_optimal[0]] = 1
-        class_prediction_bag[test_predictions<thresholds_optimal[0]] = 0
+        class_prediction_bag = copy.deepcopy(test_scores)
+        class_prediction_bag[test_scores>=thresholds_optimal[0]] = 1
+        class_prediction_bag[test_scores<thresholds_optimal[0]] = 0
         test_predictions = class_prediction_bag
         test_labels = np.squeeze(test_labels)
     else:        
         for i in range(args.num_classes):
-            class_prediction_bag = copy.deepcopy(test_predictions[:, i])
-            class_prediction_bag[test_predictions[:, i]>=thresholds_optimal[i]] = 1
-            class_prediction_bag[test_predictions[:, i]<thresholds_optimal[i]] = 0
+            class_prediction_bag = copy.deepcopy(test_scores[:, i])
+            class_prediction_bag[test_scores[:, i]>=thresholds_optimal[i]] = 1
+            class_prediction_bag[test_scores[:, i]<thresholds_optimal[i]] = 0
             test_predictions[:, i] = class_prediction_bag
     bag_score = 0
     for i in range(0, len(test_df)):
@@ -128,7 +144,7 @@ def test(args, test_df, milnet, criterion, thresholds=None, return_predictions=F
     avg_score = bag_score / len(test_df)
     
     if return_predictions:
-        return total_loss / len(test_df), avg_score, auc_value, thresholds_optimal, test_predictions, test_labels
+        return total_loss / len(test_df), avg_score, auc_value, thresholds_optimal, test_scores, test_predictions, test_labels
     return total_loss / len(test_df), avg_score, auc_value, thresholds_optimal
 
 def multi_label_roc(labels, predictions, num_classes, pos_label=1):
@@ -212,7 +228,7 @@ def main():
     parser.add_argument('--feats_size', default=512, type=int, help='Dimension of the feature size [512]')
     parser.add_argument('--lr', default=1e-4, type=float, help='Initial learning rate [0.0001]')
     parser.add_argument('--num_epochs', default=100, type=int, help='Number of total training epochs [100]')
-    parser.add_argument('--stop_epochs', default=30, type=int, help='Skip remaining epochs if training has not improved after N epochs [10]')
+    parser.add_argument('--stop_epochs', default=10, type=int, help='Skip remaining epochs if training has not improved after N epochs [10]')
     parser.add_argument('--gpu_index', type=int, nargs='+', default=(0,), help='GPU ID(s) [0]')
     parser.add_argument('--weight_decay', default=1e-3, type=float, help='Weight decay [1e-3]')
     parser.add_argument('--dataset', default='TCGA-lung-default', type=str, help='Dataset folder name')
@@ -222,8 +238,9 @@ def main():
     parser.add_argument('--dropout_node', default=0, type=float, help='Bag classifier dropout rate [0]')
     parser.add_argument('--non_linearity', default=1, type=float, help='Additional nonlinear operation [0]')
     parser.add_argument('--average', type=bool, default=False, help='Average the score of max-pooling and bag aggregating')
-    parser.add_argument('--eval_scheme', default='5-fold-cv', type=str, help='Evaluation scheme [5-fold-cv | 5-fold-cv-standalone-test | 5-time-train+valid+test ]')
-    
+    parser.add_argument('--eval_scheme', default='5-fold-cv-standalone-test', type=str, help='Evaluation scheme [5-fold-cv | 5-fold-cv-standalone-test | 5-time-train+valid+test ]')
+    parser.add_argument('--test_path', default='tmb_test', type=str, help='Test Folder Path')
+    parser.add_argument('--test_dataset', default='TCGA-lung_test', type=str, help='Dataset for testing data')
     args = parser.parse_args()
     print(args.eval_scheme)
 
@@ -233,7 +250,7 @@ def main():
     if args.model == 'dsmil':
         import dsmil as mil
     elif args.model == 'abmil':
-        import abmil as mil
+        from model.abmil import GatedAttention as mil
 
     def apply_sparse_init(m):
         if isinstance(m, (nn.Linear, nn.Conv2d, nn.Conv1d)):
@@ -250,13 +267,13 @@ def main():
         optimizer = torch.optim.Adam(milnet.parameters(), lr=args.lr, betas=(0.5, 0.9), weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.num_epochs, 0.000005)
         return milnet, criterion, optimizer, scheduler
+
     
-    if args.dataset == 'TCGA-lung-default':
-        bags_csv = 'datasets/tcga-dataset/TCGA.csv'
-    else:
-        bags_csv = os.path.join('datasets', args.dataset, args.dataset+'.csv')
+    bags_csv = os.path.join('datasets', args.dataset, args.dataset+'.csv')
+    test_bags_csv = os.path.join('datasets', args.test_dataset, args.test_dataset+'.csv')
 
     generate_pt_files(args, pd.read_csv(bags_csv))
+    generate_test_pt_files(args, pd.read_csv(test_bags_csv))
  
     if args.eval_scheme == '5-fold-cv':
         bags_path = glob.glob('temp_train/*.pt')
@@ -299,7 +316,7 @@ def main():
                     save_model(args, fold, run, save_path, milnet, thresholds_optimal)
                 if counter > args.stop_epochs: break
             fold_results.append((best_ac, best_auc))
-            plot_loss_curves(train_losses, test_losses, plt_save_path, f"Fold{fold+1}")
+            plot_loss_curves(train_losses, test_losses, plt_save_path, f"loss_curve_{fold}")
         mean_ac = np.mean(np.array([i[0] for i in fold_results]))
         mean_auc = np.mean(np.array([i[1] for i in fold_results]), axis=0)
         # Print mean and std deviation for each class
@@ -364,14 +381,21 @@ def main():
     if args.eval_scheme == '5-fold-cv-standalone-test':
         bags_path = glob.glob('temp_train/*.pt')
         bags_path = shuffle(bags_path)
-        reserved_testing_bags = bags_path[:int(args.split*len(bags_path))]
-        bags_path = bags_path[int(args.split*len(bags_path)):]
+        test_bags_path = glob.glob('temp_test/*.pt')
+        reserved_testing_bags = test_bags_path
+        # reserved_testing_bags = bags_path[:int(args.split*len(bags_path))]
+        # bags_path = bags_path[int(args.split*len(bags_path)):]
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         fold_results = []
         fold_models = []
 
         save_path = os.path.join('weights', datetime.date.today().strftime("%Y%m%d"))
         os.makedirs(save_path, exist_ok=True)
+        plt_save_path = os.path.join(save_path,'plts')
+        os.makedirs(plt_save_path, exist_ok=True)
+        score_save_path = os.path.join(save_path,'scores')
+        os.makedirs(score_save_path, exist_ok=True)
+
         run = len(glob.glob(os.path.join(save_path, '*.pth')))
 
         for fold, (train_index, test_index) in enumerate(kf.split(bags_path)):
@@ -384,11 +408,16 @@ def main():
             best_auc = 0
             counter = 0
             best_model = []
+            train_losses = []
+            test_losses = []
 
             for epoch in range(1, args.num_epochs+1):
                 counter += 1
                 train_loss_bag = train(args, train_path, milnet, criterion, optimizer) # iterate all bags
                 test_loss_bag, avg_score, aucs, thresholds_optimal = test(args, test_path, milnet, criterion)
+
+                train_losses.append(train_loss_bag)
+                test_losses.append(test_loss_bag)
                 
                 print_epoch_info(epoch, args, train_loss_bag, test_loss_bag, avg_score, aucs)
                 scheduler.step()
@@ -405,17 +434,24 @@ def main():
                 if counter > args.stop_epochs: break
             fold_results.append((best_ac, best_auc))
             fold_models.append(best_model)
+            plot_loss_curves(train_losses, test_losses, plt_save_path, f"loss_curve_{fold}")
 
         fold_predictions = []
-        for item in fold_models:
+        for fold, item in enumerate(fold_models):
             best_model = item[0]
             optimal_thresh = item[1]
-            test_loss_bag, avg_score, aucs, thresholds_optimal, test_predictions, test_labels = test(args, reserved_testing_bags, best_model.cuda(), criterion, thresholds=optimal_thresh, return_predictions=True)
+            test_loss_bag, avg_score, aucs, thresholds_optimal, test_scores, test_predictions, test_labels = test(args, reserved_testing_bags, best_model.cuda(), criterion, thresholds=optimal_thresh, return_predictions=True)
             fold_predictions.append(test_predictions)
+            cm, f1, auroc, sensitivity, specificity, precision = compute_metrics(test_labels, test_predictions, test_scores, os.path.join(score_save_path,f'metrics_{fold}.json'))
+            plot_cm(cm, os.path.join(plt_save_path,f'confusion_matrix_{fold}.png'))
+            plot_roc(test_labels, test_scores, os.path.join(plt_save_path,f'roc_curve_{fold}.png'))
+
+
         predictions_stack = np.stack(fold_predictions, axis=0)
         mode_result = mode(predictions_stack, axis=0)
-        combined_predictions = mode_result.mode[0]
+        combined_predictions = mode_result.mode
         combined_predictions = combined_predictions.squeeze()
+
 
         if args.num_classes > 1:
             # Compute Hamming Loss
